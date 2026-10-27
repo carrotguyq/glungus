@@ -249,7 +249,7 @@ th{color:#9cf;cursor:pointer;position:sticky;top:0;background:#111;white-space:n
 <p>Data from __UPDATED__ covering the next __HOURS__ hours (rerun the script to refresh). Changes happen at the new day, 13:00 GMT+3. <span id="count"></span></p>
 <div class="tabs">
 <button class="tab" data-t="towns">Towns</button>
-<button class="tab" data-t="nations">Inactive nations</button>
+<button class="tab" data-t="nations">Nations</button>
 </div>
 <div class="f">
 <label>Search<input id="q" type="text" placeholder="name, mayor, king..."></label>
@@ -259,6 +259,13 @@ th{color:#9cf;cursor:pointer;position:sticky;top:0;background:#111;white-space:n
 <option value="24" selected>24 hours</option><option value="48">2 days</option>
 <option value="72">3 days</option><option value="168">1 week</option>
 <option value="336">2 weeks</option>
+</select></label>
+<label>Sort by
+<select id="srt"><option value="">Custom (column header)</option>
+<option value="at:1" selected>Time left (soonest)</option>
+<option value="balance:-1">Gold in bank (high to low)</option>
+<option value="residents:-1">Residents (high to low)</option>
+<option value="chunks:-1">Chunks / claims (high to low)</option>
 </select></label>
 <label class="tw">Outcome
 <select id="outc"><option value="">All</option><option value="falls">Falls</option><option value="transfer">Mayor changes</option></select></label>
@@ -273,7 +280,7 @@ th{color:#9cf;cursor:pointer;position:sticky;top:0;background:#111;white-space:n
 <div class="w"><table><thead><tr id="head"></tr></thead><tbody id="rows"></tbody></table></div>
 <script>
 const DATA = __DATA__;
-const ids = ["q","win","outc","opn","gmin","gmax","cmin","cmax","rmin","rmax","tmin","tmax"];
+const ids = ["q","win","srt","outc","opn","gmin","gmax","cmin","cmax","rmin","rmax","tmin","tmax"];
 const COLS = {
   towns: [["name","Town"],["open","Open"],["outcome","Outcome"],["balance","Gold"],["chunks","Chunks"],["residents","Res."],["at","When"],["nation","Nation"],["mayor","Mayor"]],
   nations: [["name","Nation"],["king","King"],["towns","Towns"],["residents","Residents"],["chunks","Chunks"],["balance","Gold"],["at","When"]]
@@ -288,6 +295,7 @@ try {
   if (s.tab === "towns" || s.tab === "nations") tab = s.tab;
 } catch (e) {}
 if (!$("win").value) $("win").value = "24";
+if (!$("srt").value && !(localStorage.getItem("emcf3") || "").includes('"srt":""')) $("srt").value = "at:1";
 const num = id => { const v = $(id).value; return v === "" ? null : Number(v); };
 const esc = s => String(s ?? "-").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const left = h => h <= 0 ? "any moment" : h < 48 ? h.toFixed(1) + "h" : Math.floor(h / 24) + "d " + Math.round(h % 24) + "h";
@@ -299,6 +307,8 @@ function render() {
   const now = Date.now(), q = $("q").value.toLowerCase(), win = Number($("win").value);
   const oc = $("outc").value, op = $("opn").value;
   const rng = (v, lo, hi) => (lo === null || v >= lo) && (hi === null || v <= hi);
+  const sv = $("srt").value;
+  if (sv) { const kd = sv.split(":"); S[tab].k = kd[0]; S[tab].d = Number(kd[1]); }
   const cols = COLS[tab], s = S[tab], all = DATA[tab];
   const rows = all.filter(r =>
     (!q || SEARCH[tab].some(k => String(r[k] ?? "").toLowerCase().includes(q))) &&
@@ -315,7 +325,8 @@ function render() {
   $("count").textContent = rows.length + " of " + all.length + " " + tab + " in data shown";
   $("head").innerHTML = cols.map(c => `<th data-k="${c[0]}">${c[1]}${s.k === c[0] ? (s.d > 0 ? " ▲" : " ▼") : ""}</th>`).join("");
   document.querySelectorAll("th").forEach(th => th.onclick = () => {
-    const k = th.dataset.k; s.d = (s.k === k) ? -s.d : 1; s.k = k; render();
+    const k = th.dataset.k, isNum = ["balance","residents","chunks","towns"].includes(k);
+    s.d = (s.k === k) ? -s.d : (isNum ? -1 : 1); s.k = k; $("srt").value = ""; render();
   });
   $("rows").innerHTML = rows.map(r => "<tr>" + cols.map(c => {
     if (c[0] === "at") {
@@ -327,7 +338,7 @@ function render() {
   }).join("") + "</tr>").join("") || `<tr><td colspan="${cols.length}">Nothing matches.</td></tr>`;
 }
 ids.forEach(i => { $(i).addEventListener("input", render); $(i).addEventListener("change", render); });
-$("reset").onclick = () => { ids.forEach(i => $(i).value = ""); $("win").value = "24"; render(); };
+$("reset").onclick = () => { ids.forEach(i => $(i).value = ""); $("win").value = "24"; $("srt").value = "at:1"; render(); };
 document.querySelectorAll(".tab").forEach(b => b.onclick = () => { tab = b.dataset.t; render(); });
 render();
 </script></body></html>"""
@@ -381,3 +392,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+         
