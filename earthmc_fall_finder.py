@@ -239,7 +239,6 @@ def fmt(towns, nations, hours):
 PAGE = """<!doctype html>
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="300">
 <title>EarthMC towns and nations about to fall</title>
 <style>
 body{font-family:system-ui,sans-serif;margin:0;padding:16px;background:#111;color:#eee}
@@ -262,6 +261,16 @@ tr.row{cursor:pointer}
 .pt{min-width:0;width:auto;margin:6px 0}
 .pt th,.pt td{padding:4px 12px 4px 0;font-size:.8rem;position:static;cursor:default}
 small{color:#888}
+.modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);align-items:flex-end;justify-content:center;z-index:10}
+.card{background:#1a1a1a;width:100%;max-width:720px;max-height:88vh;overflow:auto;border-radius:12px 12px 0 0;padding:16px;box-sizing:border-box}
+.card h2{margin:0 0 8px;font-size:1.15rem}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:.9rem;margin-bottom:12px}
+.kv b{color:#9cf;font-weight:normal}
+.btns{display:flex;gap:8px;margin:12px 0}
+.btns button{flex:1;padding:9px;background:#333;color:#eee;border:1px solid #555;border-radius:6px;font-size:.9rem}
+.card .pt{width:100%}
+.card .pt th,.card .pt td{font-size:.85rem}
+.hl td{background:#12301a}
 </style></head><body>
 <h1>EarthMC towns and nations about to fall</h1>
 <p>Data from __UPDATED__ covering the next __HOURS__ hours (rerun the script to refresh). Changes happen at the new day, 13:00 GMT+3. <span id="count"></span></p>
@@ -298,6 +307,7 @@ small{color:#888}
 <label>&nbsp;<button class="reset" id="reset">Reset filters</button></label>
 </div>
 <div class="w"><table><thead><tr id="head"></tr></thead><tbody id="rows"></tbody></table></div>
+<div class="modal" id="modal"><div class="card" id="card"></div></div>
 <script>
 const DATA = __DATA__;
 const ids = ["q","win","srt","outc","opn","pinf","gmin","gmax","cmin","cmax","rmin","rmax","tmin","tmax"];
@@ -309,7 +319,7 @@ const SEARCH = { towns: ["name","nation","mayor","outcome"], nations: ["name","k
 const $ = id => document.getElementById(id);
 let tab = "towns";
 const S = { towns: {k:"at", d:1}, nations: {k:"at", d:1} };
-const expanded = new Set();
+let openRow = null;
 let pins = new Set();
 try { pins = new Set(JSON.parse(localStorage.getItem("emcw") || "[]")); } catch (e) {}
 const savePins = () => { try { localStorage.setItem("emcw", JSON.stringify([...pins])); } catch (e) {} };
@@ -324,15 +334,28 @@ const esc = s => String(s ?? "-").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt
 const left = h => h <= 0 ? "any moment" : h < 48 ? h.toFixed(1) + "h" : Math.floor(h / 24) + "d " + Math.round(h % 24) + "h";
 const ago = ms => { const d = ms / 86400000; return d < 1 ? Math.round(d * 24) + "h ago" : d.toFixed(1) + "d ago"; };
 
-function details(r, now, n) {
+function openTown(r) {
+  openRow = r;
+  const now = Date.now();
   const rows = (r.players || []).map(p => {
     const h = (p.lapse - now) / 3600000;
-    return `<tr><td>${p.next ? "★ " : ""}${esc(p.name)}</td><td>${esc(p.role || "resident")}</td><td>${ago(now - p.last)}</td><td>${h <= 0 ? "inactive" : left(h)}</td></tr>`;
+    return `<tr class="${p.next ? "hl" : ""}"><td>${p.next ? "★ " : ""}${esc(p.name)}</td><td>${esc(p.role || "resident")}</td><td>${ago(now - p.last)}</td><td>${h <= 0 ? "inactive" : left(h)}</td></tr>`;
   }).join("");
-  return `<tr class="det"><td colspan="${n}"><div class="dbox"><b>${esc(r.name)}</b> | ${esc(r.nation)} | mayor ${esc(r.mayor)} | ${r.open ? "open" : "closed"} | ${r.balance}g | ${r.chunks} chunks<br>${esc(r.outcome)} on ${esc(new Date(r.at).toLocaleString())}` +
+  $("card").innerHTML =
+    `<h2>${esc(r.name)}</h2>` +
+    `<div class="kv"><b>Outcome</b><span>${esc(r.outcome)}</span>` +
+    `<b>When</b><span>${left((r.at - now) / 3600000)} (${esc(new Date(r.at).toLocaleString())})</span>` +
+    `<b>Status</b><span>${r.open ? "Open" : "Closed"}</span>` +
+    `<b>Gold</b><span>${r.balance}</span><b>Chunks</b><span>${r.chunks}</span>` +
+    `<b>Residents</b><span>${r.residents}</span><b>Nation</b><span>${esc(r.nation)}</span><b>Mayor</b><span>${esc(r.mayor)}</span></div>` +
+    `<div class="btns"><button data-act="pin">${pins.has(r.name) ? "★ Unwatch" : "☆ Watch"}</button>` +
+    (r.open ? `<button data-act="copy">Copy /t join ${esc(r.name)}</button>` : "") +
+    `<button data-act="close">Close</button></div>` +
     `<table class="pt"><tr><th>Player</th><th>Role</th><th>Last online</th><th>Goes inactive in</th></tr>${rows}</table>` +
-    `<small>★ = next mayor. A player counts as inactive after 42 days offline, checked at the new day.</small></div></td></tr>`;
+    `<small>★ = next mayor. A player counts as inactive after 42 days offline, checked at the new day.</small>`;
+  $("modal").style.display = "flex";
 }
+function closeTown() { openRow = null; $("modal").style.display = "none"; }
 
 function render() {
   try { const o = {tab}; ids.forEach(i => o[i] = $(i).value); localStorage.setItem("emcf3", JSON.stringify(o)); } catch (e) {}
@@ -374,7 +397,7 @@ function render() {
       return `<td>${esc(r[c[0]])}</td>`;
     }).join("");
     const main = tab === "towns" ? `<tr class="row" data-n="${esc(r.name)}">${cells}</tr>` : `<tr>${cells}</tr>`;
-    return main + (tab === "towns" && expanded.has(r.name) ? details(r, now, cols.length) : "");
+    return main;
   }).join("") || `<tr><td colspan="${cols.length}">Nothing matches.</td></tr>`;
 }
 ids.forEach(i => { $(i).addEventListener("input", render); $(i).addEventListener("change", render); });
@@ -385,8 +408,21 @@ $("rows").addEventListener("click", ev => {
   const pin = t.closest ? t.closest(".pin") : null;
   if (pin) { const n = pin.dataset.pin; if (pins.has(n)) pins.delete(n); else pins.add(n); savePins(); render(); return; }
   const tr = t.closest ? t.closest("tr.row") : null;
-  if (tr && tab === "towns") { const n = tr.dataset.n; if (expanded.has(n)) expanded.delete(n); else expanded.add(n); render(); }
+  if (tr && tab === "towns") { const r = DATA.towns.find(x => x.name === tr.dataset.n); if (r) openTown(r); }
 });
+$("card").addEventListener("click", ev => {
+  const b = ev.target.closest ? ev.target.closest("button") : null;
+  if (!b || !openRow) return;
+  if (b.dataset.act === "pin") {
+    const n = openRow.name;
+    if (pins.has(n)) pins.delete(n); else pins.add(n);
+    savePins(); render(); openTown(openRow);
+  } else if (b.dataset.act === "copy") {
+    try { navigator.clipboard.writeText("/t join " + openRow.name); b.textContent = "Copied"; } catch (e) { b.textContent = "Copy failed"; }
+  } else closeTown();
+});
+$("modal").addEventListener("click", ev => { if (ev.target === $("modal")) closeTown(); });
+setInterval(() => { if (!openRow) location.reload(); }, 300000);
 render();
 </script></body></html>"""
 
@@ -395,4 +431,47 @@ def write_html(path, towns, nations, hours):
     updated = datetime.now(timezone.utc).strftime("%b %d, %H:%M UTC")
     data = json.dumps({"towns": towns, "nations": nations}).replace("</", "<\\/")
     page = (PAGE.replace("__HOURS__", f"{hours:g}")
-                .replace("__UPDATED__",
+                .replace("__UPDATED__", updated)
+                .replace("__DATA__", data))
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(page)
+
+
+def send_webhook(url, text):
+    # Discord caps messages at 2000 chars
+    for i in range(0, len(text), 1900):
+        requests.post(url, json={"content": text[i:i + 1900]}, timeout=15)
+        time.sleep(1)
+
+
+def main():
+    global NEWDAY_HOUR
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--hours", type=float, default=24, help="window for terminal/webhook output")
+    ap.add_argument("--html", help="Write results to this HTML file (open it in a browser)")
+    ap.add_argument("--html-hours", type=float, default=336,
+                    help="how far ahead the web page looks (default 336 = 2 weeks)")
+    ap.add_argument("--newday-hour", type=int, default=NEWDAY_HOUR,
+                    help="UTC hour of the daily new day (default 10 = 13:00 GMT+3)")
+    ap.add_argument("--webhook", help="Discord webhook URL to post results to")
+    ap.add_argument("--loop", type=int, help="Re-run every N minutes")
+    args = ap.parse_args()
+    NEWDAY_HOUR = args.newday_hour
+
+    while True:
+        reach = max(args.hours, args.html_hours if args.html else 0)
+        towns, nations = find_falling(reach)
+        text = fmt(towns, nations, args.hours)
+        print(text)
+        if args.html:
+            write_html(args.html, towns, nations, args.html_hours)
+            print(f"Wrote {args.html}")
+        if args.webhook:
+            send_webhook(args.webhook, text)
+        if not args.loop:
+            break
+        time.sleep(args.loop * 60)
+
+
+if __name__ == "__main__":
+    main()
