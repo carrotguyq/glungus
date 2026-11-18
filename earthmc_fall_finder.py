@@ -251,6 +251,7 @@ h1{font-size:1.2rem;margin:0 0 4px} p{margin:0 0 12px;color:#aaa;font-size:.85re
 .f div{display:flex;gap:4px}
 input,select{width:100%;box-sizing:border-box;padding:6px;background:#222;color:#eee;border:1px solid #444;border-radius:4px}
 .reset{padding:6px 12px;background:#444;border:0;color:#fff;border-radius:4px}
+.reset.on{background:#2a4}
 .w{overflow-x:auto} table{border-collapse:collapse;width:100%;min-width:820px}
 th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #333;font-size:.9rem}
 th{color:#9cf;cursor:pointer;position:sticky;top:0;background:#111;white-space:nowrap}
@@ -296,6 +297,8 @@ small{color:#888}
 </select></label>
 <label class="tw">Outcome
 <select id="outc"><option value="">All</option><option value="falls">Falls</option><option value="transfer">Mayor changes</option></select></label>
+<label class="tw">Goes to
+<select id="via"><option value="">Anyone</option><option value="councillor">Councillor</option><option value="active">Most active</option></select></label>
 <label class="tw">Open
 <select id="opn"><option value="">Any</option><option value="yes">Open only</option><option value="no">Closed only</option></select></label>
 <label class="tw">Watchlist
@@ -304,21 +307,22 @@ small{color:#888}
 <label>Chunks<div><input id="cmin" type="number" placeholder="min"><input id="cmax" type="number" placeholder="max"></div></label>
 <label>Residents<div><input id="rmin" type="number" placeholder="min"><input id="rmax" type="number" placeholder="max"></div></label>
 <label class="nat">Towns in nation<div><input id="tmin" type="number" placeholder="min"><input id="tmax" type="number" placeholder="max"></div></label>
+<label>&nbsp;<button class="reset" id="multi">Multi-sort: off</button></label>
 <label>&nbsp;<button class="reset" id="reset">Reset filters</button></label>
 </div>
 <div class="w"><table><thead><tr id="head"></tr></thead><tbody id="rows"></tbody></table></div>
 <div class="modal" id="modal"><div class="card" id="card"></div></div>
 <script>
 const DATA = __DATA__;
-const ids = ["q","win","srt","outc","opn","pinf","gmin","gmax","cmin","cmax","rmin","rmax","tmin","tmax"];
+const ids = ["q","win","srt","outc","via","opn","pinf","gmin","gmax","cmin","cmax","rmin","rmax","tmin","tmax"];
 const COLS = {
   towns: [["pin","★"],["name","Town"],["open","Open"],["outcome","Outcome"],["balance","Gold"],["chunks","Chunks"],["residents","Res."],["at","When"],["nation","Nation"],["mayor","Mayor"]],
   nations: [["name","Nation"],["king","King"],["towns","Towns"],["residents","Residents"],["chunks","Chunks"],["balance","Gold"],["at","When"]]
 };
 const SEARCH = { towns: ["name","nation","mayor","outcome"], nations: ["name","king"] };
 const $ = id => document.getElementById(id);
-let tab = "towns";
-const S = { towns: {k:"at", d:1}, nations: {k:"at", d:1} };
+let tab = "towns", multi = false;
+const S = { towns: [{k:"at", d:1}], nations: [{k:"at", d:1}] };
 let openRow = null;
 let pins = new Set();
 try { pins = new Set(JSON.parse(localStorage.getItem("emcw") || "[]")); } catch (e) {}
@@ -363,31 +367,50 @@ function render() {
   document.querySelectorAll(".nat").forEach(e => e.style.display = tab === "nations" ? "" : "none");
   document.querySelectorAll(".tw").forEach(e => e.style.display = tab === "towns" ? "" : "none");
   const now = Date.now(), q = $("q").value.toLowerCase(), win = Number($("win").value);
-  const oc = $("outc").value, op = $("opn").value, pf = $("pinf").value;
+  const oc = $("outc").value, op = $("opn").value, pf = $("pinf").value, via = $("via").value;
   const rng = (v, lo, hi) => (lo === null || v >= lo) && (hi === null || v <= hi);
   const sv = $("srt").value;
-  if (sv) { const kd = sv.split(":"); S[tab].k = kd[0]; S[tab].d = Number(kd[1]); }
-  const cols = COLS[tab], s = S[tab], all = DATA[tab];
+  if (sv) { const kd = sv.split(":"); S[tab] = [{k: kd[0], d: Number(kd[1])}]; }
+  const cols = COLS[tab], list = S[tab], all = DATA[tab];
   const rows = all.filter(r =>
     (!q || SEARCH[tab].some(k => String(r[k] ?? "").toLowerCase().includes(q))) &&
     rng(r.balance, num("gmin"), num("gmax")) &&
     rng(r.chunks, num("cmin"), num("cmax")) &&
     rng(r.residents, num("rmin"), num("rmax")) &&
-    (tab === "nations" || ((!oc || r.kind === oc) && (!op || (op === "yes") === r.open) && (!pf || pins.has(r.name)))) &&
+    (tab === "nations" || ((!oc || r.kind === oc) && (!op || (op === "yes") === r.open) && (!pf || pins.has(r.name)) &&
+      (!via || String(r.outcome).includes(via === "councillor" ? "(councillor)" : "(most active)")))) &&
     (tab === "towns" || rng(r.towns, num("tmin"), num("tmax"))) &&
     (r.at - now) / 3600000 <= win
   ).sort((a, b) => {
     if (tab === "towns") { const pa = pins.has(a.name), pb = pins.has(b.name); if (pa !== pb) return pa ? -1 : 1; }
-    const x = a[s.k] ?? "", y = b[s.k] ?? "";
-    return (x > y ? 1 : x < y ? -1 : 0) * s.d;
+    for (const t of list) {
+      const x = a[t.k] ?? "", y = b[t.k] ?? "";
+      if (x !== y) return (x > y ? 1 : -1) * t.d;
+    }
+    return 0;
   });
   $("count").textContent = rows.length + " of " + all.length + " " + tab + " in data shown" + (tab === "towns" ? " (tap a town for details)" : "");
-  $("head").innerHTML = cols.map(c => `<th data-k="${c[0]}">${c[1]}${s.k === c[0] ? (s.d > 0 ? " ▲" : " ▼") : ""}</th>`).join("");
+  $("head").innerHTML = cols.map(c => {
+    const i = list.findIndex(x => x.k === c[0]);
+    const mark = i < 0 ? "" : (list[i].d > 0 ? " ▲" : " ▼") + (list.length > 1 ? (i + 1) : "");
+    return `<th data-k="${c[0]}">${c[1]}${mark}</th>`;
+  }).join("");
   document.querySelectorAll("#head th").forEach(th => th.onclick = () => {
     const k = th.dataset.k;
     if (k === "pin") return;
-    const isNum = ["balance","residents","chunks","towns"].includes(k);
-    s.d = (s.k === k) ? -s.d : (isNum ? -1 : 1); s.k = k; $("srt").value = ""; render();
+    const def = ["balance","residents","chunks","towns"].includes(k) ? -1 : 1;
+    const i = list.findIndex(x => x.k === k);
+    if (!multi) {
+      S[tab] = (list.length === 1 && i === 0) ? [{k, d: -list[0].d}] : [{k, d: def}];
+    } else if (i < 0) {
+      list.push({k, d: def});
+    } else if (list[i].d === def) {
+      list[i].d = -def;
+    } else {
+      list.splice(i, 1);
+      if (!list.length) list.push({k: "at", d: 1});
+    }
+    $("srt").value = ""; render();
   });
   $("rows").innerHTML = rows.map(r => {
     const cells = cols.map(c => {
@@ -401,6 +424,11 @@ function render() {
   }).join("") || `<tr><td colspan="${cols.length}">Nothing matches.</td></tr>`;
 }
 ids.forEach(i => { $(i).addEventListener("input", render); $(i).addEventListener("change", render); });
+$("multi").onclick = () => {
+  multi = !multi;
+  $("multi").textContent = "Multi-sort: " + (multi ? "on" : "off");
+  $("multi").classList.toggle("on", multi);
+};
 $("reset").onclick = () => { ids.forEach(i => $(i).value = ""); $("win").value = "24"; $("srt").value = "at:1"; render(); };
 document.querySelectorAll(".tab").forEach(b => b.onclick = () => { tab = b.dataset.t; render(); });
 $("rows").addEventListener("click", ev => {
