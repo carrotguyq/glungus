@@ -24,6 +24,7 @@ Usage:
 """
 import argparse
 import json
+import os
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -38,6 +39,14 @@ DELAY = 0.4             # ~150 req/min, under the 180/min limit
 session = requests.Session()
 session.headers["User-Agent"] = "earthmc-fall-finder/1.2"
 
+# Since Nov 18 2026 the EarthMC API requires a key on every endpoint.
+# Create one in game with /api key create, then provide it as the EMC_API_KEY
+# environment variable (on GitHub: repo Settings > Secrets and variables > Actions).
+API_KEY = os.environ.get("EMC_API_KEY", "").strip()
+if API_KEY:
+    session.headers["Authorization"] = f"Bearer {API_KEY}"
+    session.headers["X-API-Key"] = API_KEY
+
 
 def call(method, path, **kw):
     for attempt in range(6):
@@ -45,6 +54,12 @@ def call(method, path, **kw):
         if r.status_code == 429:  # rate limited, back off
             time.sleep(5 * (attempt + 1))
             continue
+        if r.status_code in (401, 403):
+            hint = ("The key was sent but rejected, check it or create a new one with /api key create."
+                    if API_KEY else
+                    "EarthMC now requires an API key. Set the EMC_API_KEY environment variable "
+                    "(on GitHub: Settings > Secrets and variables > Actions > EMC_API_KEY).")
+            raise RuntimeError(f"HTTP {r.status_code} from {path}. {hint}")
         r.raise_for_status()
         return r.json()
     raise RuntimeError("Rate limited too long, try again later")
