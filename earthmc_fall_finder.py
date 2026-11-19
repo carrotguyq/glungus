@@ -7,7 +7,7 @@ Rules this models (EarthMC, Nostra):
     (13:00 GMT+3 = 10:00 UTC).
   * The town goes to the active councillor who has been in the town longest.
     Inactive councillors are skipped. With no active councillor it goes to the
-    most active resident (approximated here by most recent login).
+    resident who has been in the town the longest.
   * With nobody active left, the town falls.
   * A nation is inactive when every one of its towns is going to fall; it falls
     when the last town does.
@@ -101,7 +101,6 @@ def find_falling(hours):
         if j:
             joined[p["uuid"]] = j
 
-    town_fall = {}   # town uuid -> when it falls (ms), or None if it won't / unknown
     results, skipped = [], 0
     for t in towns:
         res = t.get("residents", [])
@@ -109,15 +108,12 @@ def find_falling(hours):
         known = {r["uuid"]: last_seen[r["uuid"]] for r in res if r["uuid"] in last_seen}
         # Opted-out players are hidden by the API, so we can't be sure
         if not res or len(known) < len(res) or mayor_id not in known:
-            town_fall[t["uuid"]] = None
             skipped += 1
             continue
 
         mayor_at = next_newday(known[mayor_id] + inactive)   # mayor loses the town
         if mayor_at <= now:   # past the deadline but still mayor: probably Premium
-            town_fall[t["uuid"]] = None
             continue
-        town_fall[t["uuid"]] = next_newday(max(known.values()) + inactive)
         if mayor_at > now + window:
             continue
 
@@ -133,28 +129,34 @@ def find_falling(hours):
             if u in names:
                 councillors.add(u)
         # who is still active when the mayor's time runs out
+        def longest(u):   # joined the town earliest; ties broken by most recent login
+            return (joined.get(u, float("inf")), -known[u])
         active = [u for u, ts in known.items() if u != mayor_id and ts + inactive > mayor_at]
         active_c = [u for u in active if u in councillors]
         if active_c:
             succ = min(active_c, key=lambda u: joined.get(u, float("inf")))
             kind, outcome = "transfer", f"To {names[succ]} (councillor)"
         elif active:
-            succ = max(active, key=lambda u: known[u])
-            kind, outcome = "transfer", f"To {names[succ]} (most active)"
+            succ = min(active, key=longest)
+            kind, outcome = "transfer", f"To {names[succ]} (longest in town)"
         else:
             succ = None
             kind, outcome = "falls", "Falls"
 
+        top = min(active, key=longest) if active else None   # longest in the town
         players_info = sorted(
             ({"name": names[u],
               "role": "mayor" if u == mayor_id else "councillor" if u in councillors else "",
               "last": ts,
               "lapse": next_newday(ts + inactive),
-              "next": u == succ}
+              "next": u == succ,
+              "top": u == top}
              for u, ts in known.items()),
             key=lambda p: -p["last"])
 
         results.append({
+            "uuid": t["uuid"],
+            "heir": names[top] if top else None,
             "name": t["name"],
             "nation": (t.get("nation") or {}).get("name"),
             "mayor": (t.get("mayor") or {}).get("name"),
@@ -175,30 +177,35 @@ def find_falling(hours):
     nations = post_batches(
         "/nations",
         [n["uuid"] for n in nindex],
-        {"name": True, "uuid": True, "king": True, "towns": True, "stats": True},
+        {"name": True, "uuid": True, "king": True, "capital": True, "towns": True, "stats": True},
     )
+    # Nations tab = nation capitals. The king is the capital's mayor, so when the capital's
+    # mayor goes inactive the king changes (to the longest-standing resident) or the capital falls.
+    by_town = {r["uuid"]: r for r in results}
     nation_results = []
     for n in nations:
-        tl = [x["uuid"] for x in n.get("towns", []) if x["uuid"] not in ruined]
-        if not tl:
+        row = by_town.get((n.get("capital") or {}).get("uuid"))
+        if not row:
             continue
-        falls = [town_fall.get(u) for u in tl]
-        # Any town with unknown data, or one that won't fall, keeps the nation alive.
-        if any(f is None or f <= now for f in falls):
-            continue
-        at = max(falls)
-        if at <= now + window:
-            st = n.get("stats") or {}
-            nation_results.append({
-                "name": n["name"],
-                "king": (n.get("king") or {}).get("name"),
-                "towns": st.get("numTowns") or len(tl),
-                "residents": st.get("numResidents") or 0,
-                "chunks": st.get("numTownBlocks") or 0,
-                "balance": round(st.get("balance") or 0),
-                "at": at,
-                "hours_left": (at - now) / 3600000,
-            })
+        st = n.get("stats") or {}
+        heir = row["heir"]
+        nation_results.append({
+            "name": n["name"],
+            "capital": row["name"],
+            "king": (n.get("king") or {}).get("name") or row["mayor"],
+            "open": row["open"],
+            "kind": "transfer" if heir else "falls",
+            "outcome": f"King becomes {heir}" if heir else "Capital falls",
+            "heir": heir,
+            "towns": st.get("numTowns") or len(n.get("towns", [])),
+            "residents": st.get("numResidents") or 0,
+            "chunks": st.get("numTownBlocks") or 0,
+            "balance": round(st.get("balance") or 0),
+            "capgold": row["balance"],
+            "at": row["at"],
+            "hours_left": row["hours_left"],
+            "town": row,
+        })
     nation_results.sort(key=lambda x: x["at"])
 
     print(f"Skipped {skipped} towns with missing/opted-out resident data.")
@@ -225,13 +232,14 @@ def fmt(towns, nations, hours):
             )
     lines.append("")
     if not nations:
-        lines.append(f"No nations falling in the next {hours:g}h.")
+        lines.append(f"No nation capitals changing hands in the next {hours:g}h.")
     else:
-        lines.append(f"Nations falling in the next {hours:g}h ({len(nations)}):")
+        lines.append(f"Nation capitals changing hands in the next {hours:g}h ({len(nations)}):")
         for r in nations:
             lines.append(
-                f"- {r['name']} | king {r['king']} | {r['towns']} towns, {r['residents']} res, "
-                f"{r['chunks']} chunks, {r['balance']}g | {r['hours_left']:.1f}h ({when(r['at'])})"
+                f"- {r['name']} (capital {r['capital']}) | {'OPEN' if r['open'] else 'closed'} | "
+                f"{r['outcome']} | {r['towns']} towns, {r['residents']} res, {r['chunks']}ch, "
+                f"{r['balance']}g | {r['hours_left']:.1f}h ({when(r['at'])})"
             )
     return "\n".join(lines)
 
@@ -295,11 +303,11 @@ small{color:#888}
 <option value="residents:-1">Residents (high to low)</option>
 <option value="chunks:-1">Chunks / claims (high to low)</option>
 </select></label>
-<label class="tw">Outcome
+<label>Outcome
 <select id="outc"><option value="">All</option><option value="falls">Falls</option><option value="transfer">Mayor changes</option></select></label>
 <label class="tw">Goes to
-<select id="via"><option value="">Anyone</option><option value="councillor">Councillor</option><option value="active">Most active</option></select></label>
-<label class="tw">Open
+<select id="via"><option value="">Anyone</option><option value="councillor">Councillor</option><option value="active">Longest in town</option></select></label>
+<label>Open
 <select id="opn"><option value="">Any</option><option value="yes">Open only</option><option value="no">Closed only</option></select></label>
 <label class="tw">Watchlist
 <select id="pinf"><option value="">All towns</option><option value="1">Pinned only</option></select></label>
@@ -317,13 +325,13 @@ const DATA = __DATA__;
 const ids = ["q","win","srt","outc","via","opn","pinf","gmin","gmax","cmin","cmax","rmin","rmax","tmin","tmax"];
 const COLS = {
   towns: [["pin","★"],["name","Town"],["open","Open"],["outcome","Outcome"],["balance","Gold"],["chunks","Chunks"],["residents","Res."],["at","When"],["nation","Nation"],["mayor","Mayor"]],
-  nations: [["name","Nation"],["king","King"],["towns","Towns"],["residents","Residents"],["chunks","Chunks"],["balance","Gold"],["at","When"]]
+  nations: [["name","Nation"],["capital","Capital"],["king","King"],["open","Open"],["outcome","Outcome"],["towns","Towns"],["residents","Res."],["chunks","Chunks"],["balance","Gold"],["capgold","Cap. gold"],["at","When"]]
 };
-const SEARCH = { towns: ["name","nation","mayor","outcome"], nations: ["name","king"] };
+const SEARCH = { towns: ["name","nation","mayor","outcome"], nations: ["name","capital","king","heir"] };
 const $ = id => document.getElementById(id);
 let tab = "towns", multi = false;
 const S = { towns: [{k:"at", d:1}], nations: [{k:"at", d:1}] };
-let openRow = null;
+let openRow = null, openNr = null;
 let pins = new Set();
 try { pins = new Set(JSON.parse(localStorage.getItem("emcw") || "[]")); } catch (e) {}
 const savePins = () => { try { localStorage.setItem("emcw", JSON.stringify([...pins])); } catch (e) {} };
@@ -338,16 +346,16 @@ const esc = s => String(s ?? "-").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt
 const left = h => h <= 0 ? "any moment" : h < 48 ? h.toFixed(1) + "h" : Math.floor(h / 24) + "d " + Math.round(h % 24) + "h";
 const ago = ms => { const d = ms / 86400000; return d < 1 ? Math.round(d * 24) + "h ago" : d.toFixed(1) + "d ago"; };
 
-function openTown(r) {
-  openRow = r;
+function openTown(r, nr) {
+  openRow = r; openNr = nr || null;
   const now = Date.now();
   const rows = (r.players || []).map(p => {
     const h = (p.lapse - now) / 3600000;
-    return `<tr class="${p.next ? "hl" : ""}"><td>${p.next ? "★ " : ""}${esc(p.name)}</td><td>${esc(p.role || "resident")}</td><td>${ago(now - p.last)}</td><td>${h <= 0 ? "inactive" : left(h)}</td></tr>`;
+    return `<tr class="${(nr ? p.top : p.next) ? "hl" : ""}"><td>${(nr ? p.top : p.next) ? "★ " : ""}${esc(p.name)}</td><td>${esc(p.role || "resident")}</td><td>${ago(now - p.last)}</td><td>${h <= 0 ? "inactive" : left(h)}</td></tr>`;
   }).join("");
   $("card").innerHTML =
-    `<h2>${esc(r.name)}</h2>` +
-    `<div class="kv"><b>Outcome</b><span>${esc(r.outcome)}</span>` +
+    `<h2>${esc(r.name)}</h2>` + (nr ? `<p>Capital of ${esc(nr.name)}. The king is the capital's mayor.</p>` : "") +
+    `<div class="kv"><b>Outcome</b><span>${esc(nr ? nr.outcome : r.outcome)}</span>` +
     `<b>When</b><span>${left((r.at - now) / 3600000)} (${esc(new Date(r.at).toLocaleString())})</span>` +
     `<b>Status</b><span>${r.open ? "Open" : "Closed"}</span>` +
     `<b>Gold</b><span>${r.balance}</span><b>Chunks</b><span>${r.chunks}</span>` +
@@ -356,10 +364,10 @@ function openTown(r) {
     (r.open ? `<button data-act="copy">Copy /t join ${esc(r.name)}</button>` : "") +
     `<button data-act="close">Close</button></div>` +
     `<table class="pt"><tr><th>Player</th><th>Role</th><th>Last online</th><th>Goes inactive in</th></tr>${rows}</table>` +
-    `<small>★ = next mayor. A player counts as inactive after 42 days offline, checked at the new day.</small>`;
+    `<small>★ = ${nr ? "heir (longest in the town)" : "next mayor"}. A player counts as inactive after 42 days offline, checked at the new day.</small>`;
   $("modal").style.display = "flex";
 }
-function closeTown() { openRow = null; $("modal").style.display = "none"; }
+function closeTown() { openRow = null; openNr = null; $("modal").style.display = "none"; }
 
 function render() {
   try { const o = {tab}; ids.forEach(i => o[i] = $(i).value); localStorage.setItem("emcf3", JSON.stringify(o)); } catch (e) {}
@@ -377,8 +385,9 @@ function render() {
     rng(r.balance, num("gmin"), num("gmax")) &&
     rng(r.chunks, num("cmin"), num("cmax")) &&
     rng(r.residents, num("rmin"), num("rmax")) &&
-    (tab === "nations" || ((!oc || r.kind === oc) && (!op || (op === "yes") === r.open) && (!pf || pins.has(r.name)) &&
-      (!via || String(r.outcome).includes(via === "councillor" ? "(councillor)" : "(most active)")))) &&
+    (!oc || r.kind === oc) && (!op || (op === "yes") === r.open) &&
+    (tab === "nations" || ((!pf || pins.has(r.name)) &&
+      (!via || String(r.outcome).includes(via === "councillor" ? "(councillor)" : "(longest in town)")))) &&
     (tab === "towns" || rng(r.towns, num("tmin"), num("tmax"))) &&
     (r.at - now) / 3600000 <= win
   ).sort((a, b) => {
@@ -389,7 +398,7 @@ function render() {
     }
     return 0;
   });
-  $("count").textContent = rows.length + " of " + all.length + " " + tab + " in data shown" + (tab === "towns" ? " (tap a town for details)" : "");
+  $("count").textContent = rows.length + " of " + all.length + " " + tab + " in data shown" + " (tap a row for details)";
   $("head").innerHTML = cols.map(c => {
     const i = list.findIndex(x => x.k === c[0]);
     const mark = i < 0 ? "" : (list[i].d > 0 ? " ▲" : " ▼") + (list.length > 1 ? (i + 1) : "");
@@ -398,7 +407,7 @@ function render() {
   document.querySelectorAll("#head th").forEach(th => th.onclick = () => {
     const k = th.dataset.k;
     if (k === "pin") return;
-    const def = ["balance","residents","chunks","towns"].includes(k) ? -1 : 1;
+    const def = ["balance","capgold","residents","chunks","towns"].includes(k) ? -1 : 1;
     const i = list.findIndex(x => x.k === k);
     if (!multi) {
       S[tab] = (list.length === 1 && i === 0) ? [{k, d: -list[0].d}] : [{k, d: def}];
@@ -419,7 +428,7 @@ function render() {
       if (c[0] === "open") return `<td>${r.open ? "Yes" : "No"}</td>`;
       return `<td>${esc(r[c[0]])}</td>`;
     }).join("");
-    const main = tab === "towns" ? `<tr class="row" data-n="${esc(r.name)}">${cells}</tr>` : `<tr>${cells}</tr>`;
+    const main = `<tr class="row" data-n="${esc(r.name)}">${cells}</tr>`;
     return main;
   }).join("") || `<tr><td colspan="${cols.length}">Nothing matches.</td></tr>`;
 }
@@ -436,7 +445,7 @@ $("rows").addEventListener("click", ev => {
   const pin = t.closest ? t.closest(".pin") : null;
   if (pin) { const n = pin.dataset.pin; if (pins.has(n)) pins.delete(n); else pins.add(n); savePins(); render(); return; }
   const tr = t.closest ? t.closest("tr.row") : null;
-  if (tr && tab === "towns") { const r = DATA.towns.find(x => x.name === tr.dataset.n); if (r) openTown(r); }
+  if (tr) { const r = DATA[tab].find(x => x.name === tr.dataset.n); if (r) { if (tab === "towns") openTown(r); else openTown(r.town, r); } }
 });
 $("card").addEventListener("click", ev => {
   const b = ev.target.closest ? ev.target.closest("button") : null;
@@ -444,7 +453,7 @@ $("card").addEventListener("click", ev => {
   if (b.dataset.act === "pin") {
     const n = openRow.name;
     if (pins.has(n)) pins.delete(n); else pins.add(n);
-    savePins(); render(); openTown(openRow);
+    savePins(); render(); openTown(openRow, openNr);
   } else if (b.dataset.act === "copy") {
     try { navigator.clipboard.writeText("/t join " + openRow.name); b.textContent = "Copied"; } catch (e) { b.textContent = "Copy failed"; }
   } else closeTown();
@@ -503,3 +512,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+ 
