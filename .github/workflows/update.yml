@@ -27,6 +27,8 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements.txt
       - run: mkdir site && python earthmc_fall_finder.py --html site/index.html
+        env:
+          EMC_API_KEY: ${{ secrets.EMC_API_KEY }}
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
