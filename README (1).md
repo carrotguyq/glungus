@@ -7,7 +7,7 @@ web page you can open on a phone or PC, or host for free on GitHub Pages.
 ## How it decides
 
 - A mayor who has not logged in for **42 days** loses the town at the next **new day**
-  (13:00 GMT+3, which is 10:00 UTC).
+  ( New Day is at 10:00 UTC).
 - The town goes to the **active councillor who has been in the town the longest**.
   Inactive councillors are skipped.
 - With no active councillor it goes to a regular resident. You choose the rule on the page:
