@@ -4,7 +4,7 @@ EarthMC fall finder: towns and nations about to change hands or fall.
 
 Rules this models (EarthMC, Nostra):
   * A mayor who hasn't logged in for 42 days loses the town at the next new day
-    (13:00 GMT+3 = 10:00 UTC).
+    (10:00 UTC).
   * The town goes to the active councillor who has been in the town longest.
     Inactive councillors are skipped. With no active councillor it goes to the
     resident who has been in the town the longest.
@@ -32,7 +32,7 @@ import requests
 
 API = "https://api.earthmc.net/v4"
 INACTIVE_DAYS = 42
-NEWDAY_HOUR = 10        # UTC hour of the daily new day (13:00 GMT+3)
+NEWDAY_HOUR = 10        # UTC hour of the daily new day
 BATCH = 100             # lower this if the API rejects big batches
 DELAY = 0.4             # ~150 req/min, under the 180/min limit
 
@@ -196,12 +196,27 @@ def find_falling(hours):
         })
     results.sort(key=lambda x: x["at"])
 
+    def spawn_of(obj):
+        sp = (obj.get("coordinates") or {}).get("spawn") or {}
+        if sp.get("x") is None or sp.get("z") is None:
+            return None
+        return {"x": round(sp["x"]), "y": round(sp.get("y") or 0), "z": round(sp["z"])}
+
+    # fetched separately because a town's coordinates also hold every claimed chunk (large)
+    if results:
+        progress_spawn = post_batches("/towns", [r["uuid"] for r in results],
+                                      {"uuid": True, "coordinates": True})
+        spawns = {t["uuid"]: spawn_of(t) for t in progress_spawn if t.get("uuid")}
+        for r in results:
+            r["spawn"] = spawns.get(r["uuid"])
+
     print("Fetching nations...")
     nindex = call("GET", "/nations")
     nations = post_batches(
         "/nations",
         [n["uuid"] for n in nindex],
-        {"name": True, "uuid": True, "king": True, "capital": True, "towns": True, "stats": True},
+        {"name": True, "uuid": True, "king": True, "capital": True, "towns": True,
+         "stats": True, "coordinates": True},
     )
     # Nations tab = nation capitals. The king is the capital's mayor, so when the capital's
     # mayor goes inactive the king changes (to the longest-standing resident) or the capital falls.
@@ -229,6 +244,7 @@ def find_falling(hours):
             "chunks": st.get("numTownBlocks") or 0,
             "balance": round(st.get("balance") or 0),
             "capgold": row["balance"],
+            "spawn": spawn_of(n),
             "at": row["at"],
             "hours_left": row["hours_left"],
             "town": row,
@@ -287,6 +303,7 @@ h1{font-size:1.2rem;margin:0 0 4px} p{margin:0 0 12px;color:#aaa;font-size:.85re
 input,select{width:100%;box-sizing:border-box;padding:6px;background:#222;color:#eee;border:1px solid #444;border-radius:4px}
 .reset{padding:6px 12px;background:#444;border:0;color:#fff;border-radius:4px}
 .reset.on{background:#2a4}
+.nd{color:#9cf;font-size:1rem;margin:0 0 8px}
 .w{overflow-x:auto} table{border-collapse:collapse;width:100%;min-width:820px}
 th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #333;font-size:.9rem}
 th{color:#9cf;cursor:pointer;position:sticky;top:0;background:#111;white-space:nowrap}
@@ -309,7 +326,8 @@ small{color:#888}
 .hl td{background:#12301a}
 </style></head><body>
 <h1>EarthMC towns and nations about to fall</h1>
-<p>Data from __UPDATED__ covering the next __HOURS__ hours (rerun the script to refresh). Changes happen at the new day, 13:00 GMT+3. <span id="count"></span></p>
+<p class="nd" id="nd"></p>
+<p>Data from __UPDATED__ covering the next __HOURS__ hours (rerun the script to refresh). Changes happen at the new day (__NEWDAY__:00 UTC). <span id="count"></span></p>
 <div class="tabs">
 <button class="tab" data-t="towns">Towns</button>
 <button class="tab" data-t="nations">Nations</button>
@@ -351,6 +369,12 @@ small{color:#888}
 <div class="modal" id="modal"><div class="card" id="card"></div></div>
 <script>
 const DATA = __DATA__;
+const NEWDAY = __NEWDAY__;
+const nextNewDay = () => { const n = new Date(); let t = Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate(), NEWDAY); if (t <= n.getTime()) t += 86400000; return t; };
+const tickND = () => {
+  const ms = nextNewDay() - Date.now();
+  $("nd").textContent = "Next new day in " + Math.floor(ms / 3600000) + "h " + Math.floor(ms % 3600000 / 60000) + "m (" + String(NEWDAY).padStart(2, "0") + ":00 UTC)";
+};
 const ids = ["q","win","srt","outc","rule","via","opn","pinf","gmin","gmax","cmin","cmax","rmin","rmax","tmin","tmax"];
 const COLS = {
   towns: [["pin","★"],["name","Town"],["open","Open"],["outcome","Outcome"],["balance","Gold"],["chunks","Chunks"],["residents","Res."],["at","When"],["nation","Nation"],["mayor","Mayor"]],
@@ -381,6 +405,7 @@ function openTown(r, nr) {
   const act = $("rule").value === "active";
   const star = p => nr ? (act ? p.top_a : p.top) : (act ? p.next_a : p.next);
   const outTxt = act ? (nr ? nr.outcome_a : r.outcome_a) : (nr ? nr.outcome : r.outcome);
+  const fmtSp = sp => sp ? sp.x + ", " + sp.y + ", " + sp.z : "unknown";
   const dur = ms => { const d = ms / 86400000; return d < 1 ? Math.round(d * 24) + "h" : d < 10 ? d.toFixed(1) + "d" : Math.round(d) + "d"; };
   const ps = r.players || [];
   const winner = ps.find(star);
@@ -409,6 +434,7 @@ function openTown(r, nr) {
     (winTxt ? `<b>Winner</b><span>${winTxt}</span>` : "") + (leadTxt ? `<b>Lead</b><span>${leadTxt}</span>` : "") +
     `<b>When</b><span>${left((r.at - now) / 3600000)} (${esc(new Date(r.at).toLocaleString())})</span>` +
     `<b>Status</b><span>${r.open ? "Open" : "Closed"}</span>` +
+    (nr ? `<b>Nation spawn</b><span>${fmtSp(nr.spawn)}</span><b>Capital spawn</b><span>${fmtSp(r.spawn)}</span>` : `<b>Spawn</b><span>${fmtSp(r.spawn)}</span>`) +
     `<b>Gold</b><span>${r.balance}</span><b>Chunks</b><span>${r.chunks}</span>` +
     `<b>Residents</b><span>${r.residents}</span><b>Nation</b><span>${esc(r.nation)}</span><b>Mayor</b><span>${esc(r.mayor)}</span></div>` +
     `<div class="btns"><button data-act="pin">${pins.has(r.name) ? "★ Unwatch" : "☆ Watch"}</button>` +
@@ -513,6 +539,7 @@ $("card").addEventListener("click", ev => {
 });
 $("modal").addEventListener("click", ev => { if (ev.target === $("modal")) closeTown(); });
 setInterval(() => { if (!openRow) location.reload(); }, 300000);
+tickND(); setInterval(tickND, 30000);
 render();
 </script></body></html>"""
 
@@ -520,7 +547,8 @@ render();
 def write_html(path, towns, nations, hours):
     updated = datetime.now(timezone.utc).strftime("%b %d, %H:%M UTC")
     data = json.dumps({"towns": towns, "nations": nations}).replace("</", "<\\/")
-    page = (PAGE.replace("__HOURS__", f"{hours:g}")
+    page = (PAGE.replace("__NEWDAY__", str(NEWDAY_HOUR))
+                .replace("__HOURS__", f"{hours:g}")
                 .replace("__UPDATED__", updated)
                 .replace("__DATA__", data))
     with open(path, "w", encoding="utf-8") as f:
@@ -542,7 +570,7 @@ def main():
     ap.add_argument("--html-hours", type=float, default=336,
                     help="how far ahead the web page looks (default 336 = 2 weeks)")
     ap.add_argument("--newday-hour", type=int, default=NEWDAY_HOUR,
-                    help="UTC hour of the daily new day (default 10 = 13:00 GMT+3)")
+                    help="UTC hour of the daily new day (default 10)")
     ap.add_argument("--webhook", help="Discord webhook URL to post results to")
     ap.add_argument("--loop", type=int, help="Re-run every N minutes")
     args = ap.parse_args()
