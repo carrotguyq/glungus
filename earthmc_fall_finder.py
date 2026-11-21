@@ -159,19 +159,28 @@ def find_falling(hours):
             kind, outcome = "falls", "Falls"
 
         top = min(active, key=longest) if active else None   # longest in the town
+        top_a = max(active, key=lambda u: known[u]) if active else None   # most recent login
+        succ_a = succ if active_c else top_a
+        outcome_a = (outcome if active_c else
+                     f"To {names[top_a]} (most active)" if top_a else "Falls")
         players_info = sorted(
             ({"name": names[u],
               "role": "mayor" if u == mayor_id else "councillor" if u in councillors else "",
               "last": ts,
               "lapse": next_newday(ts + inactive),
               "next": u == succ,
-              "top": u == top}
+              "top": u == top,
+              "next_a": u == succ_a,
+              "top_a": u == top_a,
+              "joined": joined.get(u)}
              for u, ts in known.items()),
             key=lambda p: -p["last"])
 
         results.append({
             "uuid": t["uuid"],
             "heir": names[top] if top else None,
+            "heir_a": names[top_a] if top_a else None,
+            "outcome_a": outcome_a,
             "name": t["name"],
             "nation": (t.get("nation") or {}).get("name"),
             "mayor": (t.get("mayor") or {}).get("name"),
@@ -204,6 +213,7 @@ def find_falling(hours):
             continue
         st = n.get("stats") or {}
         heir = row["heir"]
+        heir_a = row["heir_a"]
         nation_results.append({
             "name": n["name"],
             "capital": row["name"],
@@ -212,6 +222,8 @@ def find_falling(hours):
             "kind": "transfer" if heir else "falls",
             "outcome": f"King becomes {heir}" if heir else "Capital falls",
             "heir": heir,
+            "heir_a": heir_a,
+            "outcome_a": f"King becomes {heir_a}" if heir_a else "Capital falls",
             "towns": st.get("numTowns") or len(n.get("towns", [])),
             "residents": st.get("numResidents") or 0,
             "chunks": st.get("numTownBlocks") or 0,
@@ -320,8 +332,10 @@ small{color:#888}
 </select></label>
 <label>Outcome
 <select id="outc"><option value="">All</option><option value="falls">Falls</option><option value="transfer">Mayor changes</option></select></label>
+<label>Heir is
+<select id="rule"><option value="">Longest in town</option><option value="active">Most active</option></select></label>
 <label class="tw">Goes to
-<select id="via"><option value="">Anyone</option><option value="councillor">Councillor</option><option value="active">Longest in town</option></select></label>
+<select id="via"><option value="">Anyone</option><option value="councillor">Councillor</option><option value="resident">Resident (not councillor)</option></select></label>
 <label>Open
 <select id="opn"><option value="">Any</option><option value="yes">Open only</option><option value="no">Closed only</option></select></label>
 <label class="tw">Watchlist
@@ -337,7 +351,7 @@ small{color:#888}
 <div class="modal" id="modal"><div class="card" id="card"></div></div>
 <script>
 const DATA = __DATA__;
-const ids = ["q","win","srt","outc","via","opn","pinf","gmin","gmax","cmin","cmax","rmin","rmax","tmin","tmax"];
+const ids = ["q","win","srt","outc","rule","via","opn","pinf","gmin","gmax","cmin","cmax","rmin","rmax","tmin","tmax"];
 const COLS = {
   towns: [["pin","★"],["name","Town"],["open","Open"],["outcome","Outcome"],["balance","Gold"],["chunks","Chunks"],["residents","Res."],["at","When"],["nation","Nation"],["mayor","Mayor"]],
   nations: [["name","Nation"],["capital","Capital"],["king","King"],["open","Open"],["outcome","Outcome"],["towns","Towns"],["residents","Res."],["chunks","Chunks"],["balance","Gold"],["capgold","Cap. gold"],["at","When"]]
@@ -364,13 +378,35 @@ const ago = ms => { const d = ms / 86400000; return d < 1 ? Math.round(d * 24) +
 function openTown(r, nr) {
   openRow = r; openNr = nr || null;
   const now = Date.now();
-  const rows = (r.players || []).map(p => {
+  const act = $("rule").value === "active";
+  const star = p => nr ? (act ? p.top_a : p.top) : (act ? p.next_a : p.next);
+  const outTxt = act ? (nr ? nr.outcome_a : r.outcome_a) : (nr ? nr.outcome : r.outcome);
+  const dur = ms => { const d = ms / 86400000; return d < 1 ? Math.round(d * 24) + "h" : d < 10 ? d.toFixed(1) + "d" : Math.round(d) + "d"; };
+  const ps = r.players || [];
+  const winner = ps.find(star);
+  let winTxt = "", leadTxt = "";
+  if (winner) {
+    const pool = ps.filter(p => p.role !== "mayor" && p.lapse > r.at);   // still active at the new day
+    const viaCouncillor = !nr && winner.role === "councillor";
+    const cand = viaCouncillor ? pool.filter(p => p.role === "councillor") : pool;
+    const longest = !act || viaCouncillor;
+    const sorted = [...cand].sort(longest
+      ? (a, b) => (a.joined ?? Infinity) - (b.joined ?? Infinity)
+      : (a, b) => b.last - a.last);
+    const second = sorted.find(p => p !== winner);
+    winTxt = esc(winner.name) + (winner.joined ? " (in town for " + dur(now - winner.joined) + ")" : "");
+    if (!second) leadTxt = "only active candidate";
+    else if (longest && winner.joined && second.joined) leadTxt = dur(second.joined - winner.joined) + " longer in town than " + esc(second.name);
+    else if (!longest) leadTxt = "logged in " + dur(winner.last - second.last) + " more recently than " + esc(second.name);
+  }
+  const rows = ps.map(p => {
     const h = (p.lapse - now) / 3600000;
-    return `<tr class="${(nr ? p.top : p.next) ? "hl" : ""}"><td>${(nr ? p.top : p.next) ? "★ " : ""}${esc(p.name)}</td><td>${esc(p.role || "resident")}</td><td>${ago(now - p.last)}</td><td>${h <= 0 ? "inactive" : left(h)}</td></tr>`;
+    return `<tr class="${star(p) ? "hl" : ""}"><td>${star(p) ? "★ " : ""}${esc(p.name)}</td><td>${esc(p.role || "resident")}</td><td>${ago(now - p.last)}</td><td>${p.joined ? dur(now - p.joined) : "-"}</td><td>${h <= 0 ? "inactive" : left(h)}</td></tr>`;
   }).join("");
   $("card").innerHTML =
     `<h2>${esc(r.name)}</h2>` + (nr ? `<p>Capital of ${esc(nr.name)}. The king is the capital's mayor.</p>` : "") +
-    `<div class="kv"><b>Outcome</b><span>${esc(nr ? nr.outcome : r.outcome)}</span>` +
+    `<div class="kv"><b>Outcome</b><span>${esc(outTxt ?? "")}</span>` +
+    (winTxt ? `<b>Winner</b><span>${winTxt}</span>` : "") + (leadTxt ? `<b>Lead</b><span>${leadTxt}</span>` : "") +
     `<b>When</b><span>${left((r.at - now) / 3600000)} (${esc(new Date(r.at).toLocaleString())})</span>` +
     `<b>Status</b><span>${r.open ? "Open" : "Closed"}</span>` +
     `<b>Gold</b><span>${r.balance}</span><b>Chunks</b><span>${r.chunks}</span>` +
@@ -378,8 +414,8 @@ function openTown(r, nr) {
     `<div class="btns"><button data-act="pin">${pins.has(r.name) ? "★ Unwatch" : "☆ Watch"}</button>` +
     (r.open ? `<button data-act="copy">Copy /t join ${esc(r.name)}</button>` : "") +
     `<button data-act="close">Close</button></div>` +
-    `<table class="pt"><tr><th>Player</th><th>Role</th><th>Last online</th><th>Goes inactive in</th></tr>${rows}</table>` +
-    `<small>★ = ${nr ? "heir (longest in the town)" : "next mayor"}. A player counts as inactive after 42 days offline, checked at the new day.</small>`;
+    `<table class="pt"><tr><th>Player</th><th>Role</th><th>Last online</th><th>In town for</th><th>Goes inactive in</th></tr>${rows}</table>` +
+    `<small>★ = ${nr ? (act ? "heir (most active)" : "heir (longest in the town)") : "next mayor"}. A player counts as inactive after 42 days offline, checked at the new day. Playtime is not in the API, so "In town for" is used instead.</small>`;
   $("modal").style.display = "flex";
 }
 function closeTown() { openRow = null; openNr = null; $("modal").style.display = "none"; }
@@ -394,7 +430,9 @@ function render() {
   const rng = (v, lo, hi) => (lo === null || v >= lo) && (hi === null || v <= hi);
   const sv = $("srt").value;
   if (sv) { const kd = sv.split(":"); S[tab] = [{k: kd[0], d: Number(kd[1])}]; }
-  const cols = COLS[tab], list = S[tab], all = DATA[tab];
+  const rule = $("rule").value;
+  const cols = COLS[tab], list = S[tab];
+  const all = DATA[tab].map(r => rule === "active" ? Object.assign({}, r, {outcome: r.outcome_a ?? r.outcome, heir: r.heir_a ?? r.heir}) : r);
   const rows = all.filter(r =>
     (!q || SEARCH[tab].some(k => String(r[k] ?? "").toLowerCase().includes(q))) &&
     rng(r.balance, num("gmin"), num("gmax")) &&
@@ -402,7 +440,7 @@ function render() {
     rng(r.residents, num("rmin"), num("rmax")) &&
     (!oc || r.kind === oc) && (!op || (op === "yes") === r.open) &&
     (tab === "nations" || ((!pf || pins.has(r.name)) &&
-      (!via || String(r.outcome).includes(via === "councillor" ? "(councillor)" : "(longest in town)")))) &&
+      (!via || (via === "councillor") === String(r.outcome).includes("(councillor)") && (via === "councillor" || r.kind === "transfer")))) &&
     (tab === "towns" || rng(r.towns, num("tmin"), num("tmax"))) &&
     (r.at - now) / 3600000 <= win
   ).sort((a, b) => {
